@@ -34,7 +34,7 @@ type logEvent struct {
 
 // Model is the bubbletea program state for the live goroutine dashboard.
 type Model struct {
-	client   *fetch.Client
+	src      fetch.Source
 	interval time.Duration
 	target   string
 
@@ -63,8 +63,8 @@ type Model struct {
 	eventsHeight int
 }
 
-// New builds the dashboard model for the given target and poll interval.
-func New(client *fetch.Client, interval time.Duration) Model {
+// New builds the dashboard model for the given source and poll interval.
+func New(src fetch.Source, interval time.Duration) Model {
 	cols := []table.Column{
 		{Title: "STATE", Width: 16},
 		{Title: "COUNT", Width: 5},
@@ -86,16 +86,16 @@ func New(client *fetch.Client, interval time.Duration) Model {
 	fi.Placeholder = "filter by state, created-by or function..."
 
 	return Model{
-		client:      client,
+		src:         src,
 		interval:    interval,
-		target:      client.URL,
+		target:      src.Target(),
 		table:       t,
 		filterInput: fi,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(fetchCmd(m.client), tickCmd(m.interval))
+	return tea.Batch(fetchCmd(m.src), tickCmd(m.interval))
 }
 
 type tickMsg time.Time
@@ -110,11 +110,11 @@ type fetchResultMsg struct {
 	at  time.Time
 }
 
-func fetchCmd(c *fetch.Client) tea.Cmd {
+func fetchCmd(src fetch.Source) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		gs, err := c.Fetch(ctx)
+		gs, err := src.Fetch(ctx)
 		return fetchResultMsg{gs: gs, err: err, at: time.Now()}
 	}
 }
@@ -132,7 +132,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tickCmd(m.interval)
 		}
 		m.fetching = true
-		return m, tea.Batch(fetchCmd(m.client), tickCmd(m.interval))
+		return m, tea.Batch(fetchCmd(m.src), tickCmd(m.interval))
 
 	case fetchResultMsg:
 		m.fetching = false
@@ -200,7 +200,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		if !m.fetching {
 			m.fetching = true
-			return m, fetchCmd(m.client)
+			return m, fetchCmd(m.src)
 		}
 		return m, nil
 	case "/":
