@@ -1,59 +1,54 @@
 # gshow
 
-A toolkit for watching what the goroutines in a running Go process are
-actually doing — right now, as it happens (goroutines spawned per HTTP
-request, workers blocked on a channel, leaks that never exit, etc), or over
-a short precise window if you need finer detail than a snapshot gives.
+稼働中のGoプロセスで、goroutineが今何をしているかを観察するためのツール群。HTTPリクエストの
+度に生成されるgoroutine、チャネル受信で待ち続けるworker、終了しないリークなど、実行中の様子を
+そのまま確認できる。
 
-Two complementary tools:
+2つの主要なコマンドで構成される。
 
-- **`gshow`** — a live terminal dashboard. Polls a target for a goroutine
-  dump on an interval, groups goroutines doing the identical thing, and
-  shows what changed between polls.
-- **`gshow-trace`** — a one-shot execution-trace timeline. Captures a short
-  window (seconds) of Go's execution tracer and renders a per-goroutine bar
-  chart of exactly when each one was running, runnable, blocked, or in a
-  syscall.
+- **`gshow`** — ライブのターミナルダッシュボード。一定間隔でgoroutineダンプを取得し、同じ動作
+  をしているgoroutineをグループ化して表示する。前回取得時との差分も表示するので、goroutineの
+  増減がそのまま追える。
+- **`gshow-trace`** — 実行トレースのタイムライン表示。数秒間のGo実行トレースを取得し、各
+  goroutineが実行中・実行可能・待機中・システムコール中のどれだったかを、ターミナル上のバー
+  チャートとして描画する。
 
-Plus `probe` / `gshow-build` for getting either tool into a target process
-that doesn't already expose the data they need.
+どちらのコマンドも、観測対象のプロセス側にgoroutineの情報を外部から取得できる仕組みを用意して
+おく必要がある。それを用意するための `probe` パッケージと `gshow-build` コマンドも用意した。
 
-## Quick start
+## クイックスタート
 
-A demo server is included if you don't have a target handy — it exposes
-`net/http/pprof` and has two endpoints worth poking at: `/work` spawns one
-short-lived goroutine per request (the classic "fire and forget" pattern),
-and `/leak` spawns one that never exits.
+観測対象がまだない場合は、付属のデモサーバーを使う。`net/http/pprof` を組み込んであり、次の2つ
+のエンドポイントを試せる。`/work` はリクエストの度に短命なgoroutineを1つ起動し(起動したまま
+待ち受けない、典型的なパターン)、`/leak` は終了しないgoroutineを起動する。
 
 ```sh
 go run ./cmd/demo
 ```
 
-In another terminal:
+別のターミナルで:
 
 ```sh
 go run ./cmd/gshow
 ```
 
-Then generate some traffic and watch it show up live:
+リクエストを送って、goroutineの増減がリアルタイムに表示されるのを確認する。
 
 ```sh
 for i in $(seq 1 6); do curl -s http://localhost:6060/work >/dev/null & done
 curl -s http://localhost:6060/leak >/dev/null
 ```
 
-## `gshow`: the live dashboard
+## `gshow`: ライブダッシュボード
 
-It polls a goroutine dump every second (configurable), groups goroutines
-that share the identical state and call stack, and logs which groups
-gained or lost members since the last poll — so a burst of per-request
-goroutines shows up as a `+N started` / `-N finished` line as they come and
-go, instead of getting lost in a wall of individual stack traces.
+1秒間隔(変更可能)でgoroutineダンプを取得し、状態と呼び出しスタックが完全に一致するgoroutine
+をグループ化する。そして前回取得時との差分を「recent activity」欄に記録する。これにより、リク
+エストの度に大量発生するgoroutineも、個々のスタックトレースの羅列に埋もれることなく、「+N個
+起動」「-N個終了」という形でそのまま追える。
 
-### Sample output
+### 実行例
 
-Captured against the demo server, seconds after firing 6 `/work` requests
-and 1 `/leak` request:
+デモサーバーに `/work` を6回、`/leak` を1回リクエストした直後の出力:
 
 ```
   gshow    target http://localhost:6060/debug/pprof/goroutine?debug=2   goroutines 14 (-1)   updated 18:05:07
@@ -78,16 +73,15 @@ recent activity
 ↑/↓ select · enter stack detail · / filter · r refresh now · q quit
 ```
 
-Reading this: 5 `main.handleWork` goroutines are mid-`time.Sleep` (the
-simulated work), 4 idle workers sit on a channel receive, and the "recent
-activity" log below shows exactly what just happened - 6 `handleWork`
-goroutines started together (the burst of `/work` requests), one already
-finished, and one `handleLeak` goroutine started and will now stay in the
-`chan receive` group forever, since it never exits - that's the leak,
-visibly accumulating if you keep hitting `/leak`.
+この出力から読み取れること。`main.handleWork` の5つのgoroutineは `time.Sleep` の途中(擬似的な
+作業中)であり、4つのidle workerはチャネル受信で待機している。下の「recent activity」には直前
+に起きたことがそのまま記録されている。`handleWork` のgoroutineが6つまとめて起動し(`/work` へ
+の一斉リクエスト)、そのうち1つはすでに終了している。そして `handleLeak` のgoroutineが1つ起動
+しているが、これは終了しないため `chan receive` のグループに残り続ける。`/leak` を叩き続けれ
+ばこの数が増え続ける様子がそのまま見える。それがリークである。
 
-Press `enter` on a row to drill into the full stack trace of one of its
-goroutines:
+行を選んで `enter` を押すと、そのグループに属する1つのgoroutineの完全なスタックトレースを表示
+できる。
 
 ```
 4 goroutine(s) — state: chan receive
@@ -102,63 +96,60 @@ created by main.startWorkerPool in goroutine 1
 	/home/user/gshow/cmd/demo/main.go:73 +0x3a
 ```
 
-### Usage
+### 使い方
 
 ```sh
 go run ./cmd/gshow -addr <host:port> -interval 1s
 ```
 
-- `-addr` — the target's HTTP pprof-style address, e.g. `localhost:6060`, or
-  a full `.../debug/pprof/goroutine` URL. Default `localhost:6060` if
-  neither `-socket` nor `-file` is given.
-- `-socket` — path to a `probe.ListenAndServeUnix` Unix domain socket.
-- `-file` — path to a saved dump (`-` for stdin) instead of a live target.
-- `-interval` — how often to poll. Default `1s`.
-- `-timeout` — HTTP timeout per poll. Default `5s`.
+- `-addr` — 対象プロセスのHTTP pprof形式のアドレス。例: `localhost:6060`、または
+  `.../debug/pprof/goroutine` の完全なURL。`-socket` も `-file` も指定しない場合のデフォルトは
+  `localhost:6060`。
+- `-socket` — `probe.ListenAndServeUnix` が待ち受けるUnixドメインソケットのパス。
+- `-file` — 稼働中のプロセスの代わりに、保存済みのダンプを読み込む(`-` でstdin)。
+- `-interval` — 取得間隔。デフォルト `1s`。
+- `-timeout` — 1回の取得あたりのHTTPタイムアウト。デフォルト `5s`。
 
-Only one of `-addr`, `-socket`, `-file` may be given.
+`-addr`・`-socket`・`-file` は同時に1つしか指定できない。
 
-Keys: `↑`/`↓` select, `enter` view the full stack for a group, `esc` back,
-`/` filter by state / creator / function, `r` refresh now, `q` quit.
+キー操作: `↑`/`↓` で選択、`enter` でグループの完全なスタックを表示、`esc` で戻る、`/` で状態・
+生成元・関数名による絞り込み、`r` で即時更新、`q` で終了。
 
-## Attaching to a target
+## 観測対象への接続方法
 
-Pick whichever fits the process you want to observe — the goal is that
-`gshow` can get into *any* Go program, whether or not it already runs an
-HTTP server:
+観測対象のプロセスの状態に応じて、接続方法を選ぶ。HTTPサーバーを持たないプロセスにも `gshow` を
+届けられるようにしてある。
 
-| Target already has... | Do this | Point `gshow` at it with |
+| 観測対象の状態 | すること | `gshow` の指定 |
 | --- | --- | --- |
-| `net/http/pprof` registered | nothing | `-addr host:port` |
-| its own HTTP mux, no pprof | `mux.Handle(probe.Path, probe.Handler())` | `-addr host:port` |
-| no HTTP server at all | `go probe.ListenAndServe(":6061")` | `-addr host:port` |
-| no HTTP server, no open port wanted | `go probe.ListenAndServeUnix("/tmp/x.sock")` | `-socket /tmp/x.sock` |
-| a saved dump, or one piped in | nothing | `-file dump.txt` / `-file -` |
-| can't touch the source at all | build it with `gshow-build` instead of `go build` | `-addr` / `-socket` per above |
+| `net/http/pprof` を組み込み済み | 何もしない | `-addr host:port` |
+| 独自のHTTPマルチプレクサはあるが pprof はなし | `mux.Handle(probe.Path, probe.Handler())` | `-addr host:port` |
+| HTTPサーバー自体がない | `go probe.ListenAndServe(":6061")` | `-addr host:port` |
+| HTTPサーバーがなく、ポートも開けたくない | `go probe.ListenAndServeUnix("/tmp/x.sock")` | `-socket /tmp/x.sock` |
+| 保存済み、またはパイプで受け取ったダンプがある | 何もしない | `-file dump.txt` / `-file -` |
+| ソースに一切手を入れられない | `go build` の代わりに `gshow-build` でビルドする | 上記いずれかの `-addr` / `-socket` |
 
-`probe` (this module's `probe` package) serves the same wire format as
-`net/http/pprof`'s `/debug/pprof/goroutine?debug=2` **and**
-`/debug/pprof/trace`, so both `gshow` and `gshow-trace` work against either
-one unmodified — it's a drop-in for programs that don't want to pull in the
-whole `net/http/pprof` package or share their default mux just to be
-observable.
+`probe`(このモジュールの `probe` パッケージ)は、`net/http/pprof` の
+`/debug/pprof/goroutine?debug=2` と `/debug/pprof/trace` の両方と同じ形式でデータを返す。その
+ため `gshow` と `gshow-trace` は、対象がどちらの実装であっても変更なしに動作する。
+`net/http/pprof` パッケージ全体を組み込みたくない場合や、デフォルトのマルチプレクサを共有した
+くない場合の代わりに使える。
 
-### Zero-edit builds: `gshow-build`
+### ソース変更なしでのビルド: `gshow-build`
 
-If you can't or don't want to add an import at all, `gshow-build` wraps
-`go build`/`run`/`install`/`test` and injects the probe via `-overlay` at
-build time — the target's source is never touched:
+importを1行追加することすら避けたい場合は、`gshow-build` を使う。`go build`/`run`/`install`/
+`test` をラップし、ビルド時に `-overlay` でprobeを注入する。対象のソースファイルは一切変更され
+ない。
 
 ```sh
-go get github.com/hiroyukim/gshow   # once, in the target module
+go get github.com/hiroyukim/gshow   # 対象モジュールで一度だけ実行
 gshow-build build ./cmd/yourapp
 ```
 
-The listening address is read from `GSHOW_ADDR` at run time (default
-`localhost:6061`).
+待ち受けアドレスは実行時に環境変数 `GSHOW_ADDR` から読み込む(デフォルト `localhost:6061`)。
 
-Without the dependency added, `gshow-build` isn't a silent no-op — the
-underlying `go build` fails with its own error naming exactly what to run:
+依存関係が追加されていない場合、`gshow-build` は黙って何もしないわけではない。内部で呼び出す
+`go build` がそのままエラーになり、何を実行すればよいかを明示する。
 
 ```
 $ gshow-build build ./cmd/yourapp
@@ -166,10 +157,10 @@ gshow_probe_inject.go:3:8: no required module provides package github.com/hiroyu
 	go get github.com/hiroyukim/gshow/probe/auto
 ```
 
-A `require` line alone is enough (nothing needs to statically import the
-package), but that also means a bare `go mod tidy` will prune it right back
-out, since nothing appears to use it. Pin it the standard way Go projects
-pin build-time-only tool dependencies, so `tidy` leaves it alone:
+`go.mod` に `require` 行があるだけでよく、実際にimportする箇所は不要である。ただしこれは、
+`go mod tidy` を素のまま実行すると、使われていないと判断されて削除されてしまうことも意味する。
+Goのプロジェクトがビルド時専用のツール依存を固定するときの標準的な方法で、`tidy` に消されない
+ようピン留めする。
 
 ```go
 //go:build tools
@@ -179,34 +170,28 @@ package tools
 import _ "github.com/hiroyukim/gshow/probe/auto"
 ```
 
-(An earlier version of this tried to do the injection purely through `go
-build -toolexec`, wrapping the compiler invocation after the fact. That
-doesn't work: by the time a `-toolexec` wrapper runs, `go build` has
-already fixed the package's dependency graph from the real source files, so
-a brand new import injected at that point can't resolve — the compiler's
-`-importcfg` simply won't list it. `-overlay` adds the new source file
-*before* that graph gets computed, which is what actually makes this
-possible - confirmed by hand against both approaches before settling on
-this one.)
+(この注入は、最初は `go build -toolexec` だけで実現しようとした。しかしこれは成立しない。
+`-toolexec` のラッパーが呼ばれる時点で、`go build` は実際のソースファイルからパッケージの依存
+グラフを既に確定させている。そのため、そこで新しいimportを注入してもコンパイラの
+`-importcfg` には載らず、解決できない。`-overlay` はこの依存グラフが確定する前に新しいソース
+ファイルを追加できるため、実際に機能する。両方の方式を実機で試した上で `-overlay` に決めた。)
 
-## `gshow-trace`: execution-trace timeline
+## `gshow-trace`: 実行トレースのタイムライン
 
-`gshow`'s dashboard is built on periodic snapshots (a full stack dump every
-second or so) - great for "what's piling up right now", but it can't show
-you the exact moment a goroutine blocked, or how long it actually spent
-running versus waiting between two snapshots. `gshow-trace` captures Go's
-execution trace instead (the same mechanism behind `go tool trace`), which
-records every scheduling event with a nanosecond timestamp, and renders it
-as a per-goroutine timeline directly in the terminal.
+`gshow` のダッシュボードは、1秒おきの完全なスタックダンプという定期スナップショットの上に成り
+立っている。「今何が溜まっているか」を見るには十分だが、goroutineが正確にいつブロックしたか、
+2回のスナップショットの間に実際どれだけ実行されていたかまでは分からない。`gshow-trace` はその
+代わりにGoの実行トレース(`go tool trace` と同じ仕組み)を取得する。実行トレースはすべてのスケ
+ジューリングイベントをナノ秒単位のタイムスタンプ付きで記録しており、それをgoroutineごとのタイ
+ムラインとしてターミナルに描画する。
 
 ```sh
 go run ./cmd/gshow-trace -addr localhost:6060 -seconds 3
 ```
 
-### Sample output
+### 実行例
 
-Captured against the demo server during a burst of `/work` and one `/leak`
-request:
+デモサーバーに `/work` を連続リクエストし、`/leak` も1回リクエストした状態でのキャプチャ:
 
 ```
 capturing a 3s execution trace from localhost:6060...
@@ -228,68 +213,60 @@ g9       main.startWorkerPool.fun…                                 ·····�
 █ running   ▒ runnable  ▓ syscall   · waiting     not alive
 ```
 
-(In a real terminal each glyph is colored per the legend; this is the plain
-text.) Each row is one goroutine, labeled by the function it was spawned
-from; the bar spans the capture window, one character per time bucket.
+(実際のターミナルでは、凡例の色でそれぞれの文字が色分けされる。上はプレーンテキストでの表示。)
+1行が1つのgoroutineに対応し、生成元の関数名でラベル付けされている。バーはキャプチャ期間全体に
+対応し、1文字が1つの時間区間を表す。
 
-### Reading the gap at the start of every bar
+### すべてのバーの先頭にある空白について
 
-Notice every bar here starts with blank space before the dots begin, even
-for goroutines that plainly already existed the whole time (the worker
-pool, `g8`/`g9`). That's not a bug in this tool - it's how Go's execution
-tracer works: a goroutine that isn't actively being scheduled doesn't emit
-any event at all until the tracer's next periodic full-state sync (this
-trace format batches state into "generations" roughly once a second), so
-for the first ~1s of *any* capture, an idle goroutine that existed before
-you started tracing is invisible - there's genuinely no data yet, not "not
-running". A longer `-seconds` window makes this proportionally smaller but
-never removes it. If you need the authoritative picture, save the raw trace
-and open it with the real tool:
+このサンプルでは、どのバーも先頭にしばらく空白があり、その後にドットが始まっている。worker
+pool(`g8`/`g9`)のように、キャプチャ開始前から明らかに存在していたgoroutineでも同じ空白があ
+る。これはこのツールの不具合ではなく、Goの実行トレースの仕様である。スケジューリングされてい
+ないgoroutineは、トレーサーが次に全goroutineの状態をまとめて同期するタイミング(このトレース
+形式は状態をおよそ1秒ごとの「世代」単位でまとめている)まで、一切イベントを出さない。そのため
+どのキャプチャでも、最初の約1秒間はキャプチャ開始前から存在していたidle状態のgoroutineが見え
+ない。これは「動いていない」のではなく、「まだデータがない」状態である。`-seconds` を長くすれ
+ばこの空白の割合は相対的に小さくなるが、なくなりはしない。より正確な全体像が必要な場合は、生
+のトレースを保存して本家のツールで開く。
 
 ```sh
 gshow-trace -addr localhost:6060 -seconds 3 -out trace.out
 go tool trace trace.out
 ```
 
-### Usage
+### 使い方
 
 ```sh
 go run ./cmd/gshow-trace -addr <host:port> -seconds 2
 ```
 
-- `-addr` — the target's pprof address. Default `localhost:6060`.
-- `-seconds` — how long to capture. Default `2`.
-- `-out` — also save the raw trace to this path, for `go tool trace`.
-- `-width` — output width in columns. Default `160`.
-- `-rows` — max goroutines to show, most active (most state changes) first.
-  Default `40`.
-- `-all` — also show goroutines that look like GC/trace runtime machinery
-  (hidden by default - see below).
+- `-addr` — 対象プロセスのpprofアドレス。デフォルト `localhost:6060`。
+- `-seconds` — キャプチャする長さ(秒)。デフォルト `2`。
+- `-out` — 生のトレースもこのパスに保存する(`go tool trace` 用)。
+- `-width` — 出力の幅(桁数)。デフォルト `160`。
+- `-rows` — 表示するgoroutineの最大数。状態変化が多いものから順に表示する。デフォルト `40`。
+- `-all` — GC・トレース機構自身のgoroutine(デフォルトでは非表示。後述)も表示する。
 
-Goroutines whose creating function is in `runtime`, `runtime/trace`, or
-`runtime/pprof` are hidden by default: GC workers and the tracer's own
-bookkeeping goroutines show up in every capture regardless of target and
-just add noise. Pass `-all` to see them anyway.
+生成元の関数が `runtime`・`runtime/trace`・`runtime/pprof` に属するgoroutineは、デフォルトで非
+表示にしている。GCのworkerやトレーサー自身の内部処理は、対象が何であっても毎回のキャプチャに
+出現し、ノイズにしかならないためである。`-all` を指定すればこれらも表示できる。
 
-There's no live/streaming mode for this one - a capture is inherently a
-bounded window (`trace.Start` / `trace.Stop`), so it's a separate one-shot
-command rather than a mode of the live dashboard.
+このコマンドにはライブ更新モードがない。キャプチャは `trace.Start`/`trace.Stop` による有限区
+間の取得であり、常時ストリーミングする性質のものではないため、ライブダッシュボードの1モードと
+してではなく、独立した単発のコマンドにしてある。
 
-## How it works
+## 仕組み
 
-- `probe` / `probe/auto` make a target observable: handlers (or a couple of
-  one-line servers) for both a goroutine dump and an execution trace, in
-  the same wire formats `net/http/pprof` uses.
-- `cmd/gshow-build` wraps `go build` and friends with a `-overlay` that
-  blank-imports `probe/auto` into the target package, for when you'd rather
-  not add even that one import line by hand.
-- `internal/goroutine` parses goroutine dumps and groups goroutines by a
-  signature of their state and call stack (ignoring argument values, which
-  are raw addresses that differ even between goroutines running identical
-  code).
-- `internal/fetch` polls a target over HTTP (TCP or Unix socket) or reads a
-  saved dump.
-- `internal/tui` diffs each poll against the previous one to report which
-  goroutines started and finished, grouped by where they were created.
-- `internal/xtrace` parses an execution trace (via `golang.org/x/exp/trace`)
-  into per-goroutine state timelines and renders them as text.
+- `probe` / `probe/auto` — 対象プロセスを観測可能にする。goroutineダンプと実行トレースの両方
+  を、`net/http/pprof` と同じ形式で提供するハンドラ(または1行で起動できる簡易サーバー)。
+- `cmd/gshow-build` — `go build` 系のコマンドを `-overlay` でラップし、対象パッケージに
+  `probe/auto` の blank import を注入する。importを手で1行書くことすら避けたい場合に使う。
+- `internal/goroutine` — goroutineダンプを解析し、状態と呼び出しスタックの組み合わせで
+  goroutineをグループ化する。引数の値(goroutineごとに異なる生のアドレス)は同一判定から除外
+  している。
+- `internal/fetch` — 対象からHTTP(TCPまたはUnixソケット)経由でダンプを取得する、または保存
+  済みのダンプを読み込む。
+- `internal/tui` — 取得のたびに前回との差分を取り、どのgoroutineが生成元ごとに起動・終了した
+  かを記録する。
+- `internal/xtrace` — 実行トレースを(`golang.org/x/exp/trace` を使って)解析し、goroutineごと
+  の状態タイムラインを構築してテキストとして描画する。
