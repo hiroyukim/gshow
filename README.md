@@ -246,6 +246,7 @@ go run ./cmd/gshow-trace -addr <host:port> -seconds 2
 - `-width` — 出力の幅(桁数)。デフォルト `160`。
 - `-rows` — 表示するgoroutineの最大数。状態変化が多いものから順に表示する。デフォルト `40`。
 - `-all` — GC・トレース機構自身のgoroutine(デフォルトでは非表示。後述)も表示する。
+- `-json` — テキストのタイムラインの代わりに、機械可読なJSONレポートを標準出力に表示する。
 
 生成元の関数が `runtime`・`runtime/trace`・`runtime/pprof` に属するgoroutineは、デフォルトで非
 表示にしている。GCのworkerやトレーサー自身の内部処理は、対象が何であっても毎回のキャプチャに
@@ -254,6 +255,96 @@ go run ./cmd/gshow-trace -addr <host:port> -seconds 2
 このコマンドにはライブ更新モードがない。キャプチャは `trace.Start`/`trace.Stop` による有限区
 間の取得であり、常時ストリーミングする性質のものではないため、ライブダッシュボードの1モードと
 してではなく、独立した単発のコマンドにしてある。
+
+### JSON出力(`-json`)
+
+テキストのタイムラインは人間が目で追うにはよいが、色付きのグリフを1文字ずつ数えるような読み方
+は、AIエージェントなど別のプログラムから扱うには向いていない。「このgoroutineはどれくらいブロ
+ックされていたか」に答えるには、バーの文字数を数えるより、区間の開始・終了時刻を直接読める方が
+はるかに確実である。`-json` を指定すると、`-rows`/`-all` によるgoroutineの選定と並び順はテキス
+ト表示と同じまま、その結果を構造化データとして出力する。
+
+```sh
+gshow-trace -addr localhost:6060 -seconds 1 -json -rows 3
+```
+
+```json
+{
+  "target": "localhost:6060",
+  "duration_ms": 1003.189953,
+  "goroutine_count": 33,
+  "hidden_runtime_internal": 21,
+  "goroutines": [
+    {
+      "id": 56,
+      "creator": "-",
+      "is_runtime_internal": false,
+      "reason": "select",
+      "first_seen_ms": 0.163712,
+      "last_seen_ms": 1003.189953,
+      "totals_ms": {
+        "running_ms": 0.294977,
+        "runnable_ms": 0.020416,
+        "waiting_ms": 1002.710848,
+        "syscall_ms": 0
+      },
+      "spans": [
+        { "state": "Running", "start_ms": 0.163712, "end_ms": 0.254784 },
+        { "state": "Waiting", "reason": "select", "start_ms": 0.254784, "end_ms": 1000.87328 },
+        { "state": "Runnable", "start_ms": 1000.87328, "end_ms": 1000.88896 },
+        { "state": "Running", "start_ms": 1000.88896, "end_ms": 1000.96928 },
+        { "state": "Waiting", "reason": "sync", "start_ms": 1000.96928, "end_ms": 1003.05984 },
+        { "state": "Waiting", "start_ms": 1003.05984, "end_ms": 1003.061632 },
+        { "state": "Runnable", "start_ms": 1003.061632, "end_ms": 1003.066368 },
+        { "state": "Running", "start_ms": 1003.066368, "end_ms": 1003.189953 }
+      ]
+    }
+  ]
+}
+```
+(実際の出力にはここまでで指定した3件のgoroutine分の要素が並ぶが、紙面の都合で1件目のみ抜粋し
+た。`creator` が `"-"` なのは、このgoroutineに帰属できるフレームが見つからなかったことを示し
+ており、これも実際にあり得る結果である。)
+
+`/work` リクエストで生成される側のgoroutineは、こういう記録になる(別のキャプチャからの抜粋):
+
+```json
+{
+  "id": 51,
+  "creator": "main.doWork",
+  "is_runtime_internal": false,
+  "first_seen_ms": 1001.481856,
+  "last_seen_ms": 1002.195073,
+  "totals_ms": {
+    "running_ms": 0,
+    "runnable_ms": 0,
+    "waiting_ms": 0.713217,
+    "syscall_ms": 0
+  },
+  "spans": [
+    { "state": "Waiting", "start_ms": 1001.481856, "end_ms": 1002.193152 },
+    { "state": "Waiting", "start_ms": 1002.193152, "end_ms": 1002.195073 }
+  ]
+}
+```
+
+`first_seen_ms` がキャプチャ開始よりだいぶ後ろにあることから、このgoroutineがキャプチャの途中
+で生成されたことが分かる。テキスト表示でバーの先頭にある空白を目で確認する代わりに、この数値を
+そのまま比較すればよい。
+
+フィールドの意味:
+
+- `creator` — このgoroutineを要約するのに最も有用なフレーム。テキスト表示の生成元ラベルと同じ
+  ロジックで選んでいる(内部の停止関数ではなく、`go func(){...}` の呼び出し元に近いフレームを
+  優先する)。
+- `reason` — 最も長く滞在した待機区間の理由(`chan receive` や `select` など)。理由が付いた区
+  間が一つもなければ省略される。
+- `totals_ms` — 状態ごとの合計滞在時間。各 `spans` の `state` を集計したもの。
+- `spans` — 状態が変わるたびの区間を時系列順に並べたもの。`reason` は理由が付く区間(主に
+  `Waiting`)にのみ含まれる。
+- `first_seen_ms` / `last_seen_ms` — このgoroutineについて最初に記録された区間の開始時刻と、
+  最後の区間の終了時刻。`first_seen_ms` が `0` に近くない場合、そのgoroutineはキャプチャの途中
+  で生成されたことを意味する(前述の「すべてのバーの先頭にある空白について」も参照)。
 
 ## 仕組み
 
@@ -269,4 +360,5 @@ go run ./cmd/gshow-trace -addr <host:port> -seconds 2
 - `internal/tui` — 取得のたびに前回との差分を取り、どのgoroutineが生成元ごとに起動・終了した
   かを記録する。
 - `internal/xtrace` — 実行トレースを(`golang.org/x/exp/trace` を使って)解析し、goroutineごと
-  の状態タイムラインを構築してテキストとして描画する。
+  の状態タイムラインを構築する。同じ選定結果を、テキストのタイムラインとしても、`-json` 用の
+  構造化データ(`Report`)としても描画できる。
