@@ -1,0 +1,14 @@
+{
+  "name": "gshow",
+  "description": "Plugins for observing goroutines in a running Go process with gshow",
+  "owner": {
+    "name": "Hiroyuki Yamanaka"
+  },
+  "plugins": [
+    {
+      "name": "gshow",
+      "source": "./plugins/gshow",
+      "description": "Observe goroutines in a running Go process: live dashboard, execution-trace timeline, and JSON reports an agent can read directly."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "gshow",
+  "displayName": "gshow",
+  "version": "0.1.0",
+  "description": "Observe goroutines in a running Go process: live dashboard, execution-trace timeline, and JSON reports an agent can read directly.",
+  "author": {
+    "name": "Hiroyuki Yamanaka"
+  },
+  "homepage": "https://github.com/hiroyukim/gshow",
+  "repository": "https://github.com/hiroyukim/gshow",
+  "license": "MIT",
+  "keywords": ["go", "golang", "goroutine", "debugging", "profiling", "concurrency", "deadlock"]
+}

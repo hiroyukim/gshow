@@ -394,6 +394,32 @@ gshow-trace -addr localhost:6060 -seconds 1 -json -rows 3
   最後の区間の終了時刻。`first_seen_ms` が `0` に近くない場合、そのgoroutineはキャプチャの途中
   で生成されたことを意味する(前述の「すべてのバーの先頭にある空白について」も参照)。
 
+## AIエージェントから使う
+
+`gshow`/`gshow-trace` の `-json` はAIエージェントが直接読める形式で結果を返す(詳細は
+「JSON出力」の各節を参照)。ハング・デッドロック・goroutineリークの相談を受けたときに、エージ
+ェント側が自分でこれらのコマンドを使えるよう、スキルをこのリポジトリに同梱している。
+
+### Claude Code
+
+このリポジトリ自体がClaude Codeのプラグインマーケットプレイスになっている。
+
+```
+/plugin marketplace add hiroyukim/gshow
+/plugin install gshow@gshow
+```
+
+インストールすると、`gshow`/`gshow-trace -json` の使い方を教えるスキルがどのプロジェクトでも
+有効になる。中身は `.claude/skills/gshow/SKILL.md`。このリポジトリ自体をClaude Codeで開いてい
+る場合は、インストールしなくてもプロジェクトスキルとしてそのまま読み込まれる。
+
+### Codex CLI
+
+`.agents/skills/gshow/SKILL.md`(内容は上記と同じファイルへのシンボリックリンク)を同梱してい
+るので、このリポジトリを開いているセッションでは自動的に検出される。他のプロジェクトで使いたい
+場合は、このディレクトリを対象プロジェクトの `.agents/skills/gshow/` にコピーするか、
+`~/.agents/skills/gshow/` に置く。
+
 ## 仕組み
 
 - `probe` / `probe/auto` — 対象プロセスを観測可能にする。goroutineダンプと実行トレースの両方
@@ -410,3 +436,6 @@ gshow-trace -addr localhost:6060 -seconds 1 -json -rows 3
 - `internal/xtrace` — 実行トレースを(`golang.org/x/exp/trace` を使って)解析し、goroutineごと
   の状態タイムラインを構築する。同じ選定結果を、テキストのタイムラインとしても、`-json` 用の
   構造化データ(`Report`)としても描画できる。
+- `.claude/skills/gshow/` / `.agents/skills/gshow/` / `plugins/gshow/` — AIエージェント向けの
+  スキルと、Claude Codeのプラグイン・マーケットプレイス一式(`.claude-plugin/marketplace.json`)。
+  スキル本体は `.claude/skills/gshow/SKILL.md` の1ファイルで、他はそこへのシンボリックリンク。
