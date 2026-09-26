@@ -27,12 +27,21 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
+	"time"
+
+	runtimetrace "runtime/trace"
 )
 
 // Path is the HTTP path the goroutine dump is served on, matching
 // net/http/pprof's convention so gshow's HTTP source works against either
 // one unmodified.
 const Path = "/debug/pprof/goroutine"
+
+// TracePath is the HTTP path the execution trace is served on, matching
+// net/http/pprof's convention (including its "seconds" query parameter) so
+// gshow's trace capture works against either one unmodified.
+const TracePath = "/debug/pprof/trace"
 
 // Handler returns an http.Handler that writes a full goroutine dump, in the
 // same text format as net/http/pprof's debug=2 goroutine profile. Mount it
@@ -63,13 +72,41 @@ func writeDump(w io.Writer) error {
 	}
 }
 
-// ListenAndServe starts a minimal HTTP server on addr that serves nothing
-// but the goroutine dump, for programs that don't already run an HTTP
-// server. It blocks, so run it in its own goroutine.
-func ListenAndServe(addr string) error {
+// TraceHandler returns an http.Handler that captures a runtime/trace
+// execution trace and writes it in its native binary format - the same
+// format net/http/pprof's /debug/pprof/trace produces, and that
+// `go tool trace` and gshow's own trace capture both expect. Tracing lasts
+// for the duration given by the "seconds" query parameter (default 1s, as
+// with net/http/pprof). Mount it on your own mux at TracePath.
+func TraceHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sec, err := strconv.ParseFloat(r.FormValue("seconds"), 64)
+		if err != nil || sec <= 0 {
+			sec = 1
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		if err := runtimetrace.Start(w); err != nil {
+			http.Error(w, "could not start trace: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		time.Sleep(time.Duration(sec * float64(time.Second)))
+		runtimetrace.Stop()
+	})
+}
+
+func newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle(Path, Handler())
-	return http.ListenAndServe(addr, mux)
+	mux.Handle(TracePath, TraceHandler())
+	return mux
+}
+
+// ListenAndServe starts a minimal HTTP server on addr that serves nothing
+// but the goroutine dump and execution trace endpoints, for programs that
+// don't already run an HTTP server. It blocks, so run it in its own
+// goroutine.
+func ListenAndServe(addr string) error {
+	return http.ListenAndServe(addr, newMux())
 }
 
 // ListenAndServeUnix does the same as ListenAndServe, but over a Unix
@@ -83,7 +120,5 @@ func ListenAndServeUnix(path string) error {
 	if err != nil {
 		return err
 	}
-	mux := http.NewServeMux()
-	mux.Handle(Path, Handler())
-	return http.Serve(l, mux)
+	return http.Serve(l, newMux())
 }
