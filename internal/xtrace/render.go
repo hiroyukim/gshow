@@ -109,6 +109,37 @@ func (g *Goroutine) IsRuntimeInternal() bool {
 	return isRuntimeFunc(creatorLabel(g))
 }
 
+// selectGoroutines picks which goroutines to show and in what order, shared
+// by Render and BuildReport so the two never disagree: goroutines that look
+// like GC or trace machinery are dropped unless all is true (their count is
+// returned separately), and the rest are ordered most-active-first and
+// capped at maxRows. Most active first: goroutines that changed state more
+// often during the window are more likely to be doing something interesting
+// than ones that just sat in a single state the whole time - busy
+// (running/syscall) time alone is often ~0 for every goroutine in an
+// I/O-bound program, which would make that ordering meaningless.
+func selectGoroutines(t *Trace, maxRows int, all bool) (shown []rtrace.GoID, hidden int) {
+	ids := make([]rtrace.GoID, 0, len(t.Goroutines))
+	for id, g := range t.Goroutines {
+		if !all && g.IsRuntimeInternal() {
+			hidden++
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		gi, gj := t.Goroutines[ids[i]], t.Goroutines[ids[j]]
+		if len(gi.Spans) != len(gj.Spans) {
+			return len(gi.Spans) > len(gj.Spans)
+		}
+		return gi.TotalBusy() > gj.TotalBusy()
+	})
+	if len(ids) > maxRows {
+		ids = ids[:maxRows]
+	}
+	return ids, hidden
+}
+
 // Render draws a text timeline: one row per goroutine (most active first,
 // capped at maxRows), each a bar of width timelineWidth showing which state
 // it was in at each point in the capture. totalWidth bounds the whole line
@@ -119,27 +150,7 @@ func Render(t *Trace, totalWidth, maxRows int, all bool) string {
 	if len(t.Goroutines) == 0 {
 		return "no goroutine activity captured"
 	}
-	ids := make([]rtrace.GoID, 0, len(t.Goroutines))
-	hidden := 0
-	for id, g := range t.Goroutines {
-		if !all && g.IsRuntimeInternal() {
-			hidden++
-			continue
-		}
-		ids = append(ids, id)
-	}
-	// Most active first: goroutines that changed state more often during
-	// the window are more likely to be doing something interesting than
-	// ones that just sat in a single state the whole time - busy
-	// (running/syscall) time alone is often ~0 for every goroutine in an
-	// I/O-bound program, which would make that ordering meaningless.
-	sort.Slice(ids, func(i, j int) bool {
-		gi, gj := t.Goroutines[ids[i]], t.Goroutines[ids[j]]
-		if len(gi.Spans) != len(gj.Spans) {
-			return len(gi.Spans) > len(gj.Spans)
-		}
-		return gi.TotalBusy() > gj.TotalBusy()
-	})
+	shown, hidden := selectGoroutines(t, maxRows, all)
 
 	labelWidth := 34
 	timelineWidth := max(totalWidth-labelWidth-1, 10)
@@ -150,16 +161,12 @@ func Render(t *Trace, totalWidth, maxRows int, all bool) string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "captured %s across %d goroutines (most active first, showing up to %d)",
-		t.Duration.Round(time.Millisecond), len(ids), maxRows)
+		t.Duration.Round(time.Millisecond), len(t.Goroutines)-hidden, maxRows)
 	if hidden > 0 {
 		fmt.Fprintf(&b, " - %d runtime/GC housekeeping goroutines hidden, pass -all to show them", hidden)
 	}
 	b.WriteString("\n\n")
 
-	shown := ids
-	if len(shown) > maxRows {
-		shown = shown[:maxRows]
-	}
 	for _, id := range shown {
 		g := t.Goroutines[id]
 		label := fmt.Sprintf("g%-7d %s", g.ID, creatorLabel(g))

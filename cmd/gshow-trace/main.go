@@ -13,6 +13,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -25,9 +26,10 @@ func main() {
 	addr := flag.String("addr", "localhost:6060", "target process's pprof address, e.g. localhost:6060")
 	seconds := flag.Float64("seconds", 2, "how long to capture")
 	out := flag.String("out", "", "also save the raw trace here, for `go tool trace`")
-	width := flag.Int("width", 160, "output width in columns")
+	width := flag.Int("width", 160, "output width in columns (ignored with -json)")
 	maxRows := flag.Int("rows", 40, "max goroutines to show, most active first")
 	all := flag.Bool("all", false, "also show goroutines that look like GC/trace runtime machinery")
+	jsonOut := flag.Bool("json", false, "print a machine-readable JSON report on stdout instead of the text timeline")
 	flag.Parse()
 
 	duration := time.Duration(*seconds * float64(time.Second))
@@ -53,6 +55,16 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gshow-trace: parsing trace:", err)
 		os.Exit(1)
+	}
+
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(xtrace.BuildReport(tr, *addr, *maxRows, *all)); err != nil {
+			fmt.Fprintln(os.Stderr, "gshow-trace: encoding report:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	fmt.Print(xtrace.Render(tr, *width, *maxRows, *all))
