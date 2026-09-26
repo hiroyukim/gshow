@@ -107,13 +107,61 @@ go run ./cmd/gshow -addr <host:port> -interval 1s
   `localhost:6060`。
 - `-socket` — `probe.ListenAndServeUnix` が待ち受けるUnixドメインソケットのパス。
 - `-file` — 稼働中のプロセスの代わりに、保存済みのダンプを読み込む(`-` でstdin)。
-- `-interval` — 取得間隔。デフォルト `1s`。
+- `-interval` — 取得間隔。デフォルト `1s`。`-json` では無視される。
 - `-timeout` — 1回の取得あたりのHTTPタイムアウト。デフォルト `5s`。
+- `-json` — ライブダッシュボードを起動する代わりに、1回だけ取得してJSONレポートを標準出力に表
+  示し、終了する。
 
 `-addr`・`-socket`・`-file` は同時に1つしか指定できない。
 
 キー操作: `↑`/`↓` で選択、`enter` でグループの完全なスタックを表示、`esc` で戻る、`/` で状態・
 生成元・関数名による絞り込み、`r` で即時更新、`q` で終了。
+
+### JSON出力(`-json`)
+
+`gshow-trace` と同じ理由で、`gshow` にも1回分のスナップショットをJSONで取れるモードがある。ラ
+イブダッシュボードは常時ポーリングしながら差分を表示するものなので、こちらは差分ではなく「今こ
+の瞬間のグループ一覧」を1回だけ出力する形になる。グループ化のロジックはダッシュボードと同じもの
+を使っている。
+
+```sh
+gshow -addr localhost:6060 -json
+```
+
+デモサーバーに `/work` を5回、`/leak` を1回リクエストした直後の出力(紙面の都合で2グループ目
+までを抜粋、`stack` は改行を含む生のスタックダンプ):
+
+```json
+{
+  "target": "http://localhost:6060/debug/pprof/goroutine?debug=2",
+  "captured_at": "2026-09-26T18:46:06.23572935+09:00",
+  "goroutine_count": 14,
+  "groups": [
+    {
+      "state": "sleep",
+      "count": 5,
+      "created_by": "main.handleWork",
+      "top_frame": "time.Sleep",
+      "member_ids": [21, 24, 35, 51, 68],
+      "stack": "goroutine 21 [sleep]:\ntime.Sleep(0xee6b2800)\n\t/usr/local/go/src/runtime/time.go:368 +0x165\nmain.doWork()\n\t/home/user/gshow/cmd/demo/main.go:55 +0x28\ncreated by main.handleWork in goroutine 19\n\t/home/user/gshow/cmd/demo/main.go:49 +0x28\n\n"
+    },
+    {
+      "state": "chan receive",
+      "count": 4,
+      "created_by": "main.startWorkerPool",
+      "top_frame": "main.startWorkerPool.func1",
+      "member_ids": [8, 9, 10, 11],
+      "stack": "goroutine 8 [chan receive]:\nmain.startWorkerPool.func1()\n\t/home/user/gshow/cmd/demo/main.go:74 +0x45\ncreated by main.startWorkerPool in goroutine 1\n\t/home/user/gshow/cmd/demo/main.go:73 +0x3a\n\n"
+    }
+  ]
+}
+```
+
+フィールドはテキスト表示の列にそのまま対応する。`created_by`・`top_frame` はテキスト表示の
+CREATED BY・TOP FRAME列と同じラベル(引数の値を除いた関数名)、`member_ids` はそのグループに属
+するgoroutine IDの一覧、`stack` はテキスト表示で `enter` を押したときに見えるのと同じ、代表1件
+分の生のスタックダンプである。継続的に監視したい場合は、この `-json` を一定間隔で自分で呼び出
+すか、差分検知が欲しければライブダッシュボードをそのまま使う。
 
 ## 観測対象への接続方法
 
@@ -354,7 +402,7 @@ gshow-trace -addr localhost:6060 -seconds 1 -json -rows 3
   `probe/auto` の blank import を注入する。importを手で1行書くことすら避けたい場合に使う。
 - `internal/goroutine` — goroutineダンプを解析し、状態と呼び出しスタックの組み合わせで
   goroutineをグループ化する。引数の値(goroutineごとに異なる生のアドレス)は同一判定から除外
-  している。
+  している。同じグループ化結果を、`-json` 用の構造化データ(`Report`)としても出力できる。
 - `internal/fetch` — 対象からHTTP(TCPまたはUnixソケット)経由でダンプを取得する、または保存
   済みのダンプを読み込む。
 - `internal/tui` — 取得のたびに前回との差分を取り、どのgoroutineが生成元ごとに起動・終了した
